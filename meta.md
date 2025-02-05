@@ -1,4 +1,4 @@
-# META: NPM-GIT-INIT
+# META: GITONIT
 
 ## Folder Structure
 
@@ -14,80 +14,153 @@
 ```
 ## File: README.md
 
-# NpmGitInit
+# Node Init Wrapper Script
 
-## Description
+This script wraps around `npm`, `bun`, `pnpm`, or `yarn` commands to initialize a new project, set up a Git repository, create a GitHub repository, and push the initial setup to GitHub. It also handles the creation of `.gitignore` and updates the `package.json` with the repository URL.
 
-NpmGitInit is a powerful shell script designed to streamline the process of initializing Node.js projects. It integrates the creation and configuration of GitHub repositories directly into your project setup workflow. Perfect for developers looking to automate their initial setup tasks for Node.js projects, this script simplifies the process to a single command execution.
+## Key Features:
+1. **Package Manager Initialization**: Initializes a project with the specified package manager (npm, bun, pnpm, or yarn).
+2. **Git Setup**: Initializes a Git repository, sets the default branch to `main`, and makes the initial commit.
+3. **GitHub Integration**: Creates a new GitHub repository and links it to the local project.
+4. **Repository URL Update**: Updates the `package.json` file with the GitHub repository URL.
+5. **Initial Commit & Push**: Makes the initial commit and pushes the code to the GitHub repository.
 
-## Features
+### Code:
 
-- **Automated GitHub Repository Creation**: Creates a GitHub repository for your Node.js project with ease.
-- **Project Directory Initialization**: Sets up your project directory with essential Node.js configurations.
-- **Choice of GitHub Organization**: Allows selection of a GitHub organization for your repository, defaulting to your personal account.
-- **Compatibility with npm, yarn, and pnpm**: Seamlessly integrates with popular Node.js package managers.
-- **Open Source Contribution**: Open to community contributions and improvements.
+```zsh
+#!/bin/zsh
 
-## Getting Started
+# Exit if no command is provided
+if [ -z "$1" ]; then
+    echo "No command provided. Exiting."
+    exit 1
+fi
 
-### Prerequisites
+# should be npm, bun, pnpm or yarn
+ORIGINAL_CMD="$1"
+shift
 
-- [Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git) installed and configured on your system.
-- [GitHub CLI](https://cli.github.com/manual/installation) installed and authenticated.
-- [`jq`](https://stedolan.github.io/jq/download/) command-line JSON processor installed.
-- A GitHub account for repository creation and management. [Sign up here](https://github.com/join) if you don't have one.
+# get the bin path
+ORIGINAL_CMD_PATH="$(which "$ORIGINAL_CMD")"
 
-### Installation
+# to populate later in the script
+ORG_CHOICE=""
 
-Execute the following command in your terminal to install:
+# Function to initialize Git and set the default branch to 'main'
+initialize_git_and_set_main() {
+    git init
+    git commit --allow-empty -m "Initial commit"    
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    if [ "$CURRENT_BRANCH" != "main" ]; then
+        git branch -m "$CURRENT_BRANCH" "main"
+    fi
+    echo "Initialised git repository and set default branch to 'main'"
+}
 
-```bash
-curl -sSL https://raw.githubusercontent.com/seriouslyjs/NpmGitInit/master/install.sh | bash
+# Function to update package.json with the repository URL
+update_package_json() {
+    REPO_URL="https://github.com/$ORG_CHOICE/$DIR_NAME.git"
+    jq '.repository = {"type": "git", "url": "'$REPO_URL'"}' package.json > temp.json && mv temp.json package.json
+    echo "Package.json updated with repository URL: $REPO_URL"
+}
+
+# Function for the initial commit and push
+initial_commit_and_push() {
+    git add .
+    if [ $(git rev-list --count HEAD) -eq 1 ]; then
+        git commit --amend -m "Initial commit: Setup project with package manager and linked GitHub repository"
+    else
+        git commit -m "Initial commit: Setup project with package manager and linked GitHub repository"
+    fi
+    git push -u origin main --force-with-lease
+    echo "Initial commit and push complete"
+}
+
+# Function to fetch GitHub username and available organizations, then select one
+fetch_and_select_org() {
+    if ! GH_USERNAME=$(gh api /user --jq '.login'); then
+        echo "Error fetching GitHub username. Make sure you're logged in with 'gh auth login'."
+        exit 1
+    fi
+
+    echo "Fetching available organizations..."
+    if ! ORGS=$(gh api -X GET /user/orgs --paginate --jq '.[].login' | tr '\n' ' '); then
+        echo "Error fetching organizations. Make sure you're logged in with 'gh auth login'."
+        exit 1
+    fi
+
+    echo "Available organizations:"
+    i=1
+    ORGS_ARRAY=($ORGS)
+    for org in "${ORGS_ARRAY[@]}"; do
+        echo "$i) $org\n"
+        let i++
+    done
+
+    echo "Please enter the number of the organization to use"
+    echo "Or Press Enter for $GH_USERNAME:"
+    read ORG_NUMBER
+
+    if [[ -z "$ORG_NUMBER" ]]; then
+        ORG_CHOICE="$GH_USERNAME"
+        echo "Defaulting to: $ORG_CHOICE"
+    elif [[ "$ORG_NUMBER" =~ ^[0-9]+$ ]]; then
+        ARRAY_INDEX=$((ORG_NUMBER - 1))
+        if [ "$ARRAY_INDEX" -ge 0 ] && [ "$ARRAY_INDEX" -lt "${#ORGS_ARRAY[@]}" ]; then
+            ORG_CHOICE="${ORGS_ARRAY[$ARRAY_INDEX]}"
+            echo "Selected organization: $ORG_CHOICE"
+        else
+            echo "Invalid selection. Exiting."
+            exit 1
+        fi
+    else
+        echo "Invalid input. Exiting."
+        exit 1
+    fi
+}
+
+# Function to check package.json and run package manager init if necessary
+check_and_run_package_init() {
+    if [ -f "package.json" ]; then
+        if jq -e '.name' package.json > /dev/null; then
+            echo "package.json already initialized. Skipping package manager init."
+        else
+            echo "package.json exists but is missing a 'name'. Proceeding with init."
+            if ! "$ORIGINAL_CMD_PATH" init "$@"; then
+                echo "Initialization with '$ORIGINAL_CMD' failed. Exiting."
+                exit 1
+            fi
+        fi
+    else
+        echo "No package.json found. Proceeding with init."
+        if ! "$ORIGINAL_CMD_PATH" init "$@"; then
+            echo "Initialization with '$ORIGINAL_CMD' failed. Exiting."
+            exit 1
+        fi
+    fi
+}
+
+# Check if the first argument is 'init'
+if [ "$1" != "init" ]; then
+    "$ORIGINAL_CMD_PATH" "$@"
+    exit 0;
+fi    
+    check_and_run_package_init
+    fetch_and_select_org
+    DIR_NAME="$(basename "$(pwd)")"    
+    initialize_git_and_set_main
+
+    echo "Creating GitHub repository from the current directory..."
+    if ! gh repo create "$ORG_CHOICE/$DIR_NAME" --private --source .; then
+        echo "Failed to create repository with the current directory as source."
+        exit 1
+    fi
+
+    wget -O .gitignore https://raw.githubusercontent.com/github/gitignore/master/Node.gitignore
+    update_package_json
+    initial_commit_and_push
+    echo "All Done! Project & Repo initialised & pushed to GitHub. Happy coding!"
 ```
-
-This command will download and execute the `install.sh` script, which in turn will set up `node-init-wrapper.sh` and the required aliases.
-
-### Usage
-
-Initiate a new Node.js project using:
-
-```bash
-npm init
-```
-
-Or with yarn:
-
-```bash
-yarn init
-```
-
-Or with pnpm:
-
-```bash
-pnpm init
-```
-
-Then follow the interactive prompts to select an organization and configure your repository.
-
-## Contributing
-
-We welcome contributions from the community. To contribute:
-
-1. Fork the project.
-2. Create a new feature branch (`git checkout -b feature/YourAmazingFeature`).
-3. Commit your changes (`git commit -m 'Add some YourAmazingFeature'`).
-4. Push to the branch (`git push origin feature/YourAmazingFeature`).
-5. Open a pull request.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](https://github.com/seriouslyjs/NpmGitInit/blob/main/LICENSE) file for details.
-
-## Contact
-
-Jason Nathan - [@jason_nathan](https://twitter.com/jason_nathan)
-
-Project Link: [https://github.com/seriouslyjs/NpmGitInit](https://github.com/seriouslyjs/NpmGitInit)
 
 ---
 
@@ -145,58 +218,169 @@ echo "Installation complete. Please restart your terminal or source your $ALIAS_
 
 ## File: node-init-wrapper.sh
 ```bash
-#!/bin/bash
+#!/bin/zsh
 
-# The original command (npm, yarn, or pnpm)
-ORIGINAL_CMD=$1
-# Find the path of the original command. This works correctly even when alias is set
-ORIGINAL_CMD_PATH=$(which "$ORIGINAL_CMD")
+# Exit if no command is provided
+if [ -z "$1" ]; then
+    echo "No command provided. Exiting."
+    exit 1
+fi
 
-# Shift the arguments so $1 becomes the first argument of the original command
+# should be npm, bun, pnpm or yarn
+ORIGINAL_CMD="$1"
 shift
 
-# Get the directory name
-DIR_NAME=$(basename "$(pwd)")
+# get the bin path
+ORIGINAL_CMD_PATH="$(which "$ORIGINAL_CMD")"
 
-# Get the GitHub username
-GH_USERNAME=$(gh api /user --jq '.login')
+# to populate later in the script
+ORG_CHOICE=""
 
-# Check if the first argument is 'init'
-if [ "$1" = "init" ]; then
-    # 1. Get the directory it was called in
-    echo "Current directory: $DIR_NAME"
+
+# Function to initialize Git and set the default branch to 'main'
+initialize_git_and_set_main() {
+    git init
+    # Make an initial commit to ensure HEAD is not ambiguous
+    git commit --allow-empty -m "Initial commit"    
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    if [ "$CURRENT_BRANCH" != "main" ]; then
+        git branch -m "$CURRENT_BRANCH" "main"
+    fi
+    echo "Initialised git repository and set default branch to 'main'"
+}
+
+# Function to update package.json with the repository URL
+update_package_json() {
+    REPO_URL="https://github.com/$ORG_CHOICE/$DIR_NAME.git"
+    jq '.repository = {"type": "git", "url": "'$REPO_URL'"}' package.json > temp.json && mv temp.json package.json
+    echo "Package.json updated with repository URL: $REPO_URL"
+}
+
+# Function for the initial commit and push
+initial_commit_and_push() {
+    git add .
+
+    # Check if there is only one commit in the repository
+    if [ $(git rev-list --count HEAD) -eq 1 ]; then
+        # Amend the initial commit if it's the only one
+        git commit --amend -m "Initial commit: Setup project with package manager and linked GitHub repository"
+    else
+        # Make a new commit if there are already other commits
+        git commit -m "Initial commit: Setup project with package manager and linked GitHub repository"
+    fi
+
+    git push -u origin main --force-with-lease
+    echo "Initial commit and push complete"
+}
+
+# Function to fetch GitHub username and available organizations, then select one
+fetch_and_select_org() {
+    if ! GH_USERNAME=$(gh api /user --jq '.login'); then
+        echo "Error fetching GitHub username. Make sure you're logged in with 'gh auth login'."
+        exit 1
+    fi
+
     echo "Fetching available organizations..."
-    ORGS=$(gh api -X GET /user/orgs --paginate --jq '.[].login' | tr '\n' ' ')
+    if ! ORGS=$(gh api -X GET /user/orgs --paginate --jq '.[].login' | tr '\n' ' '); then
+        echo "Error fetching organizations. Make sure you're logged in with 'gh auth login'."
+        exit 1
+    fi
 
     echo "Available organizations:"
-    PS3="Please select the number above (or press Enter for $GH_USERNAME): "
-    select ORG_CHOICE in $ORGS; do
-        ORG_CHOICE=${ORG_CHOICE:-$GH_USERNAME}
-        break
+    i=1
+    ORGS_ARRAY=($ORGS)
+    for org in "${ORGS_ARRAY[@]}"; do
+        echo "$i) $org\n"
+        let i++
     done
-    # 2. Run 'gh repo create'
-    gh repo create $ORG_CHOICE/$DIR_NAME --private -g Node
 
-    # 3. Clone the repo into the current directory
-    # Assuming you want to clone into the current directory
-    gh repo clone $ORG_CHOICE/$DIR_NAME .
+    echo "Please enter the number of the organization to use"
+    echo "Or Press Enter for $GH_USERNAME:"
+    read ORG_NUMBER
 
-    # 4. Run the original init command
+    if [[ -z "$ORG_NUMBER" ]]; then
+        ORG_CHOICE="$GH_USERNAME"
+        echo "Defaulting to: $ORG_CHOICE"
+    elif [[ "$ORG_NUMBER" =~ ^[0-9]+$ ]]; then
+        ARRAY_INDEX=$((ORG_NUMBER - 1))
+        if [ "$ARRAY_INDEX" -ge 0 ] && [ "$ARRAY_INDEX" -lt "${#ORGS_ARRAY[@]}" ]; then
+            ORG_CHOICE="${ORGS_ARRAY[$ARRAY_INDEX]}"
+            echo "Selected organization: $ORG_CHOICE"
+        else
+            echo "Invalid selection. Exiting."
+            exit 1
+        fi
+    else
+        echo "Invalid input. Exiting."
+        exit 1
+    fi
+}
+
+
+# Function to check package.json and run package manager init if necessary
+check_and_run_package_init() {
+    if [ -f "package.json" ]; then
+        if jq -e '.name' package.json > /dev/null; then
+            echo "package.json already initialized. Skipping package manager init."
+        else
+            echo "package.json exists but is missing a 'name'. Proceeding with init."
+            if ! "$ORIGINAL_CMD_PATH" init "$@"; then
+                echo "Initialization with '$ORIGINAL_CMD' failed. Exiting."
+                SCRIPTEXIT
+                exit 1
+            fi
+        fi
+    else
+        echo "No package.json found. Proceeding with init."
+        if ! "$ORIGINAL_CMD_PATH" init "$@"; then
+            echo "Initialization with '$ORIGINAL_CMD' failed. Exiting."
+            SCRIPTEXIT
+            exit 1
+        fi
+    fi
+}
+
+
+# Check if the first argument is 'init'
+if [ "$1" != "init" ]; then
+    # If the first argument is not 'init', run the original command directly
     "$ORIGINAL_CMD_PATH" "$@"
+    exit 0;
+fi    
+    check_and_run_package_init
 
-    # 5. Stage and commit the files
-    git add package.json
-    git commit -m "Initial commit"
-    git push -u origin main
-else
-    # Pass all arguments to the original command
-    "$ORIGINAL_CMD_PATH" "$@"
-fi
+    # Get the GitHub username or org, ensuring error handling if the `gh` command fails
+    fetch_and_select_org
+
+    # Get the directory name, ensuring it's quoted to handle spaces or special characters
+    DIR_NAME="$(basename "$(pwd)")"    
+
+    # set git up
+    initialize_git_and_set_main
+
+    # Create the GitHub repository from the current directory as the source
+    echo "Creating GitHub repository from the current directory..."
+    if ! gh repo create "$ORG_CHOICE/$DIR_NAME" --private --source .; then
+        echo "Failed to create repository with the current directory as source."
+        exit 1
+    fi
+
+    # fetch the Node gitignore template
+    wget -O .gitignore https://raw.githubusercontent.com/github/gitignore/master/Node.gitignore
+
+
+    # update package.json with the repository URL
+    update_package_json
+
+    #finally, initial commit and push
+    initial_commit_and_push
+
+    echo "All Done! Project & Repo initialised & pushed to GitHub. Happy coding!"
 ```
 
 ## Git Repository
 
 ```plaintext
-origin	https://github.com/seriouslyjs/NpmGitInit.git (fetch)
-origin	https://github.com/seriouslyjs/NpmGitInit.git (push)
+origin	https://github.com/seriouslyjs/GitOnIt.git (fetch)
+origin	https://github.com/seriouslyjs/GitOnIt.git (push)
 ```
